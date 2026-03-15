@@ -7,12 +7,13 @@ Lambda@Edge rewrites all URLs (HTML, CSS, JS) so the entire site stays on the CD
 ## What it does
 
 - Caches static assets (CSS, JS, images, fonts) at CloudFront edge locations worldwide (30-day TTL)
-- Caches HTML pages with configurable TTLs (15 min default, 1 hour for blog/content)
+- Caches HTML pages with configurable TTLs (12 hour default, 24 hours for blog/content)
 - Bypasses cache for dynamic paths: wp-admin, wp-login, cart, checkout, WooCommerce, REST API, contact forms
 - Lambda@Edge rewrites all `www.example.com` URLs to the CDN domain — no WordPress changes needed
 - Adds security headers (HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy)
 - HTTP/2 + HTTP/3 (QUIC) enabled
 - Brotli + Gzip compression
+- Custom branded error page when origin is down — served from cache for 5 minutes
 
 ## Architecture
 
@@ -106,8 +107,8 @@ Users won't notice anything except faster pages. The WordPress server becomes a 
 | `/wp-json/*` | Bypass | No | REST API |
 | `/wp-content/*` | 30 days | Yes | Themes, plugins, uploads |
 | `/wp-includes/*` | 30 days | Yes | Core CSS/JS |
-| `/blog/*`, `/insights/*`, `/resources/*` | 1 hour | Yes | Content pages |
-| Everything else | 15 min | Yes | Homepage, general pages |
+| `/blog/*`, `/insights/*`, `/resources/*` | 24 hours | Yes | Content pages |
+| Everything else | 12 hours | Yes | Homepage, general pages |
 
 ## Cache invalidation
 
@@ -126,6 +127,7 @@ The Lambda function runs on **origin-request** (cache miss only):
 2. **Text files** (HTML, CSS, JS): Fetches from origin, rewrites all origin domain URLs to CDN domain, returns the modified response
 3. **Redirects**: Rewrites `Location` header so redirects stay on CDN
 4. **Non-GET requests**: Forwards with Host header fix (for POST forms, etc.)
+5. **Origin errors**: Returns a branded "We'll be right back" page if the origin returns 5xx or is unreachable (cached for 5 minutes)
 
 CloudFront caches the Lambda's response, so the function only runs once per unique URL until the TTL expires.
 
@@ -137,7 +139,7 @@ If your WordPress has custom dynamic paths (e.g., `/members/*`, `/shop/*`), add 
 
 ### Adjusting TTLs
 
-Modify the cache policy resources in the template. Lower TTLs = fresher content, higher TTLs = better performance. The 15-minute default is a good balance for most sites.
+Modify the cache policy resources in the template. Lower TTLs = fresher content, higher TTLs = better performance. The current defaults (12h general, 24h content, 30d static) are tuned for origin resilience — if the origin goes down, CloudFront continues serving cached pages.
 
 ### Adding content path patterns
 
@@ -164,6 +166,7 @@ infra/
 scripts/
   invalidate.sh         # Cache invalidation CLI
   lighthouse.sh         # Lighthouse baseline/test/compare
+  warm-cache.sh         # Warm CloudFront cache via sitemap crawl
 reports/                # Generated Lighthouse reports (gitignored)
 ```
 

@@ -12,10 +12,10 @@ User → CloudFront (edge) → Origin: www.trinityp3.com (18.138.157.149 / 18.14
 
 CloudFront cache behaviors route requests by path pattern:
 - Static assets (CSS/JS/images/fonts): 30-day TTL
-- Homepage: 5-minute TTL
-- Blog/content pages: 1-hour TTL
-- Default pages: 15-minute TTL
+- Blog/content pages: 24-hour TTL
+- Default pages: 12-hour TTL
 - Bypass (no cache): wp-admin, wp-login, my-account, cart, checkout, wp-json, contact forms
+- Custom error page: branded "We'll be right back" page on origin 5xx or connection failure (cached 5 min)
 
 ## Origin Details
 
@@ -38,8 +38,8 @@ tp3-fast/
 │   └── cloudfront.yaml       # CloudFormation template
 ├── scripts/
 │   ├── invalidate.sh          # Cache invalidation CLI
-│   ├── baseline.sh            # Run Lighthouse baseline
-│   └── compare.sh             # Compare before/after Lighthouse scores
+│   ├── lighthouse.sh           # Lighthouse baseline/test/compare
+│   └── warm-cache.sh           # Warm CloudFront cache via sitemap crawl
 ├── reports/                   # Lighthouse JSON/HTML reports
 └── package.json               # lighthouse dev dependency
 ```
