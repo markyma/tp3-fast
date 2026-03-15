@@ -1,0 +1,399 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFront CDN accelerator for www.trinityp3.com with Lambda@Edge URL rewriting
+
+Parameters:
+  OriginDomain:
+    Type: String
+    Default: www.trinityp3.com
+
+  FastDomain:
+    Type: String
+    Default: tp3-fast.yma.cloud
+
+  AcmCertificateArn:
+    Type: String
+    Default: arn:aws:acm:us-east-1:273617194870:certificate/ed74ee7b-c3e9-49bb-b41e-6c8f0c207645
+
+  HostedZoneId:
+    Type: String
+    Default: Z2KLFD7XA7XIEI
+
+Resources:
+
+  # --- Lambda@Edge for URL rewriting ---
+
+  LambdaEdgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: tp3-fast-lambda-edge
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - edgelambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  RewriteFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: tp3-fast-rewrite
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: !GetAtt LambdaEdgeRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          'use strict';
+          const https=require('https');
+          const O='www.trinityp3.com',C='tp3-fast.yma.cloud';
+          const re=/https?:\/\/www\.trinityp3\.com/g;
+          const repl='https://'+C;
+          const bin=/\.(png|jpe?g|gif|svg|ico|woff2?|ttf|eot|mp[34]|web[mp]|avif|pdf|zip|gz)$/i;
+          exports.handler=(event,ctx,cb)=>{
+            const r=event.Records[0].cf.request;
+            if(r.method!=='GET'||bin.test(r.uri)){
+              r.headers.host=[{key:'Host',value:O}];
+              return cb(null,r);
+            }
+            const p=r.uri+(r.querystring?'?'+r.querystring:'');
+            const h={'Host':O,'Accept':'*/*','Accept-Encoding':'identity'};
+            if(r.headers['user-agent'])h['User-Agent']=r.headers['user-agent'][0].value;
+            https.get({hostname:O,port:443,path:p,headers:h},(res)=>{
+              let b='';
+              res.on('data',d=>b+=d);
+              res.on('end',()=>{
+                if(res.headers.location){
+                  return cb(null,{status:String(res.statusCode),headers:{
+                    location:[{key:'Location',value:res.headers.location.replace(re,repl)}],
+                    'cache-control':[{key:'Cache-Control',value:'no-cache'}]
+                  }});
+                }
+                const ct=res.headers['content-type']||'';
+                if(ct.includes('text/')||ct.includes('javascript')||ct.includes('json')||ct.includes('xml'))b=b.replace(re,repl);
+                const rh={};
+                ['content-type','cache-control','last-modified','etag','vary'].forEach(k=>{
+                  if(res.headers[k])rh[k]=[{key:k,value:res.headers[k]}];
+                });
+                cb(null,{status:String(res.statusCode),statusDescription:'OK',headers:rh,body:b});
+              });
+            }).on('error',()=>{
+              cb(null,{status:'502',statusDescription:'Bad Gateway',
+                headers:{'content-type':[{key:'Content-Type',value:'text/plain'}]},body:'Origin error'});
+            });
+          };
+
+  RewriteFunctionV2:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref RewriteFunction
+
+  # --- Cache policies ---
+
+  StaticAssetsCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: tp3-static-30d
+        DefaultTTL: 2592000
+        MaxTTL: 31536000
+        MinTTL: 86400
+        ParametersInCacheKeyAndForwardedToOrigin:
+          CookiesConfig:
+            CookieBehavior: none
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: none
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+
+  ContentCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: tp3-content-1hr
+        DefaultTTL: 3600
+        MaxTTL: 86400
+        MinTTL: 300
+        ParametersInCacheKeyAndForwardedToOrigin:
+          CookiesConfig:
+            CookieBehavior: none
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: whitelist
+            QueryStrings:
+              - p
+              - page
+              - s
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+
+  DefaultCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: tp3-default-15min
+        DefaultTTL: 900
+        MaxTTL: 3600
+        MinTTL: 60
+        ParametersInCacheKeyAndForwardedToOrigin:
+          CookiesConfig:
+            CookieBehavior: none
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: whitelist
+            QueryStrings:
+              - p
+              - page
+              - s
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+
+  # --- Origin request policy (no Host forwarding — CF sends origin domain) ---
+
+  OriginRequestPolicy:
+    Type: AWS::CloudFront::OriginRequestPolicy
+    Properties:
+      OriginRequestPolicyConfig:
+        Name: tp3-origin-request
+        CookiesConfig:
+          CookieBehavior: none
+        HeadersConfig:
+          HeaderBehavior: whitelist
+          Headers:
+            - Accept
+            - Accept-Language
+        QueryStringsConfig:
+          QueryStringBehavior: all
+
+  # Bypass paths need cookies + query strings forwarded, but NOT Host header
+  BypassOriginRequestPolicy:
+    Type: AWS::CloudFront::OriginRequestPolicy
+    Properties:
+      OriginRequestPolicyConfig:
+        Name: tp3-bypass-request
+        CookiesConfig:
+          CookieBehavior: all
+        HeadersConfig:
+          HeaderBehavior: whitelist
+          Headers:
+            - Accept
+            - Accept-Language
+            - Referer
+        QueryStringsConfig:
+          QueryStringBehavior: all
+
+  # --- Security response headers ---
+
+  ResponseHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: tp3-response-headers
+        SecurityHeadersConfig:
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 31536000
+            IncludeSubdomains: true
+            Override: true
+            Preload: true
+          ContentTypeOptions:
+            Override: true
+          FrameOptions:
+            FrameOption: SAMEORIGIN
+            Override: true
+          ReferrerPolicy:
+            ReferrerPolicy: strict-origin-when-cross-origin
+            Override: true
+
+  # --- CloudFront Distribution ---
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: TrinityP3 CDN Accelerator
+        HttpVersion: http2and3
+        PriceClass: PriceClass_All
+        DefaultRootObject: ''
+
+        Origins:
+          - DomainName: !Ref OriginDomain
+            Id: wordpress-origin
+            CustomOriginConfig:
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols:
+                - TLSv1.2
+              OriginReadTimeout: 30
+              OriginKeepaliveTimeout: 5
+
+        Aliases:
+          - !Ref FastDomain
+
+        ViewerCertificate:
+          AcmCertificateArn: !Ref AcmCertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+
+        CacheBehaviors:
+
+          # --- Bypass behaviors (no cache, forward everything except Host) ---
+
+          - PathPattern: /wp-admin/*
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: !Ref BypassOriginRequestPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            Compress: true
+
+          - PathPattern: /wp-login.php
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: !Ref BypassOriginRequestPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            Compress: true
+
+          - PathPattern: /my-account/*
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: !Ref BypassOriginRequestPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            Compress: true
+
+          - PathPattern: /cart/*
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: !Ref BypassOriginRequestPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            Compress: true
+
+          - PathPattern: /checkout/*
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: !Ref BypassOriginRequestPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            Compress: true
+
+          - PathPattern: /wp-json/*
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: !Ref BypassOriginRequestPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            Compress: true
+
+          # --- Static assets (30-day cache, no Lambda needed) ---
+
+          - PathPattern: /wp-content/*
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: !Ref StaticAssetsCachePolicy
+            OriginRequestPolicyId: !Ref OriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref ResponseHeadersPolicy
+            Compress: true
+            LambdaFunctionAssociations:
+              - EventType: origin-request
+                LambdaFunctionARN: !Ref RewriteFunctionV2
+                IncludeBody: false
+
+          - PathPattern: /wp-includes/*
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: !Ref StaticAssetsCachePolicy
+            OriginRequestPolicyId: !Ref OriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref ResponseHeadersPolicy
+            Compress: true
+            LambdaFunctionAssociations:
+              - EventType: origin-request
+                LambdaFunctionARN: !Ref RewriteFunctionV2
+                IncludeBody: false
+
+          # --- Content pages (1hr cache + Lambda@Edge URL rewriting) ---
+
+          - PathPattern: /blog/*
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: !Ref ContentCachePolicy
+            OriginRequestPolicyId: !Ref OriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref ResponseHeadersPolicy
+            Compress: true
+            LambdaFunctionAssociations:
+              - EventType: origin-request
+                LambdaFunctionARN: !Ref RewriteFunctionV2
+                IncludeBody: false
+
+          - PathPattern: /insights/*
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: !Ref ContentCachePolicy
+            OriginRequestPolicyId: !Ref OriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref ResponseHeadersPolicy
+            Compress: true
+            LambdaFunctionAssociations:
+              - EventType: origin-request
+                LambdaFunctionARN: !Ref RewriteFunctionV2
+                IncludeBody: false
+
+          - PathPattern: /resources/*
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: !Ref ContentCachePolicy
+            OriginRequestPolicyId: !Ref OriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref ResponseHeadersPolicy
+            Compress: true
+            LambdaFunctionAssociations:
+              - EventType: origin-request
+                LambdaFunctionARN: !Ref RewriteFunctionV2
+                IncludeBody: false
+
+        # --- Default behavior (15min cache + Lambda@Edge) ---
+
+        DefaultCacheBehavior:
+          TargetOriginId: wordpress-origin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: !Ref DefaultCachePolicy
+          OriginRequestPolicyId: !Ref OriginRequestPolicy
+          ResponseHeadersPolicyId: !Ref ResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+          Compress: true
+          LambdaFunctionAssociations:
+            - EventType: origin-request
+              LambdaFunctionARN: !Ref RewriteFunctionV2
+              IncludeBody: false
+
+  # --- DNS ---
+
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref FastDomain
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt Distribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+        EvaluateTargetHealth: false
+
+Outputs:
+  DistributionId:
+    Value: !Ref Distribution
+  DistributionDomain:
+    Value: !GetAtt Distribution.DomainName
+  SiteUrl:
+    Value: !Sub "https://${FastDomain}"
+  LambdaArn:
+    Value: !Ref RewriteFunctionV2

@@ -1,0 +1,16 @@
+{
+  "name": "wp-cloudfront-accelerator",
+  "version": "1.0.0",
+  "description": "CloudFront CDN accelerator for WordPress sites with Lambda@Edge URL rewriting",
+  "scripts": {
+    "baseline": "./scripts/lighthouse.sh baseline",
+    "test:cdn": "./scripts/lighthouse.sh test",
+    "compare": "./scripts/lighthouse.sh compare"
+  },
+  "keywords": ["wordpress", "cloudfront", "cdn", "performance", "lighthouse"],
+  "author": "Mark Young",
+  "license": "MIT",
+  "devDependencies": {
+    "lighthouse": "^13.0.3"
+  }
+}
