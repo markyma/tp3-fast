@@ -117,10 +117,10 @@ Resources:
     Type: AWS::CloudFront::CachePolicy
     Properties:
       CachePolicyConfig:
-        Name: tp3-content-1hr
-        DefaultTTL: 3600
-        MaxTTL: 86400
-        MinTTL: 300
+        Name: tp3-content-24hr
+        DefaultTTL: 86400
+        MaxTTL: 604800
+        MinTTL: 3600
         ParametersInCacheKeyAndForwardedToOrigin:
           CookiesConfig:
             CookieBehavior: none
@@ -139,10 +139,10 @@ Resources:
     Type: AWS::CloudFront::CachePolicy
     Properties:
       CachePolicyConfig:
-        Name: tp3-default-15min
-        DefaultTTL: 900
-        MaxTTL: 3600
-        MinTTL: 60
+        Name: tp3-default-12hr
+        DefaultTTL: 43200
+        MaxTTL: 86400
+        MinTTL: 900
         ParametersInCacheKeyAndForwardedToOrigin:
           CookiesConfig:
             CookieBehavior: none

@@ -10,8 +10,9 @@
 set -euo pipefail
 
 STACK_NAME="tp3-fast"
+DIST_ID="${DIST_ID:-E2FKPXG4N8DU5C}"
 AWS_PROFILE="${AWS_PROFILE:-yma-cloud-deployer}"
-REGION="${AWS_REGION:-ap-southeast-1}"
+REGION="${AWS_REGION:-us-east-1}"
 
 if [ $# -eq 0 ]; then
     echo "Usage: $0 <path> [path2] [path3] ..."
