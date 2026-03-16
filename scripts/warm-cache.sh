@@ -2,13 +2,13 @@
 # Warm the CloudFront cache by crawling all pages and their assets
 #
 # Usage:
-#   ./warm-cache.sh                     # warm tp3-fast.yma.cloud
+#   ./warm-cache.sh                     # warm www.trinityp3.com
 #   ./warm-cache.sh https://example.com # warm a custom domain
 #   ./warm-cache.sh --pages-only        # only warm HTML pages, skip assets
 
 set -u
 
-SITE="${1:-https://tp3-fast.yma.cloud}"
+SITE="${1:-https://www.trinityp3.com}"
 SITE="${SITE%/}"
 PAGES_ONLY=false
 PARALLEL=10
@@ -17,7 +17,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 if [ "${1:-}" = "--pages-only" ]; then
     PAGES_ONLY=true
-    SITE="${2:-https://tp3-fast.yma.cloud}"
+    SITE="${2:-https://www.trinityp3.com}"
     SITE="${SITE%/}"
 fi
 

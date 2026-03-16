@@ -142,7 +142,7 @@ case "${1:-help}" in
         run_lighthouse "https://www.trinityp3.com/" "baseline"
         ;;
     test)
-        url="${2:-https://fast.trinityp3.com/}"
+        url="${2:-https://www.trinityp3.com/}"
         run_lighthouse "$url" "test"
         echo ""
         echo "Run '$0 compare' to see side-by-side comparison."
@@ -153,8 +153,8 @@ case "${1:-help}" in
     *)
         echo "Usage: $0 {baseline|test [url]|compare}"
         echo ""
-        echo "  baseline              Run Lighthouse on www.trinityp3.com (origin)"
-        echo "  test [url]            Run Lighthouse on fast.trinityp3.com (CDN)"
+        echo "  baseline              Run Lighthouse on www.trinityp3.com (before CDN)"
+        echo "  test [url]            Run Lighthouse on www.trinityp3.com (after CDN)"
         echo "  compare               Compare baseline vs test scores"
         ;;
 esac

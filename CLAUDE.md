@@ -2,32 +2,46 @@
 
 ## Purpose
 
-Put CloudFront in front of `www.trinityp3.com` (WordPress on Apache/EC2 in ap-southeast-1) to dramatically improve page load times and Lighthouse scores.
+Put CloudFront in front of `www.trinityp3.com` (WordPress on Apache/EC2 behind ALB in ap-southeast-1) to dramatically improve page load times and Lighthouse scores.
 
 ## Architecture
 
 ```
-User → CloudFront (edge) → Origin: www.trinityp3.com (18.138.157.149 / 18.140.186.2)
+User → CloudFront (edge) → origin.trinityp3.com (CNAME to ALB) → EC2
+                              ↑ HTTP-only, Host: www.trinityp3.com forwarded
+```
+
+Direct admin access (bypasses CDN):
+```
+Admin → admin.trinityp3.com (A record to EC2 IP) → EC2
 ```
 
 CloudFront cache behaviors route requests by path pattern:
 - Static assets (CSS/JS/images/fonts): 30-day TTL
 - Blog/content pages: 24-hour TTL
 - Default pages: 12-hour TTL
-- Bypass (no cache): wp-admin, wp-login, my-account, cart, checkout, wp-json, contact forms
-- Custom error page: branded "We'll be right back" page on origin 5xx or connection failure (cached 5 min)
+- Bypass (no cache): wp-admin, wp-login, wp-cron, my-account, cart, checkout, wp-json
+- Custom error page: branded "We'll be right back" page from S3 on origin 5xx (cached 5 min)
+
+## DNS Records
+
+| Record | Type | Target | Purpose |
+|--------|------|--------|---------|
+| `www.trinityp3.com` | A (alias) | CloudFront distribution | Production CDN |
+| `trinityp3.com` | A (alias) | CloudFront distribution | Apex domain |
+| `origin.trinityp3.com` | CNAME | `dualstack.www-trinityp3-com-2026-1815045803.ap-southeast-1.elb.amazonaws.com` | CloudFront origin |
+| `admin.trinityp3.com` | A | `54.169.176.222` | Direct admin access |
 
 ## Origin Details
 
 | Key | Value |
 |-----|-------|
-| Domain | `www.trinityp3.com` |
-| Server | Apache/2.4.58 (Ubuntu) on EC2 |
+| Origin domain | `origin.trinityp3.com` (CNAME to `dualstack.www-trinityp3-com-2026-1815045803.ap-southeast-1.elb.amazonaws.com`) |
+| Protocol | HTTP-only (CloudFront → origin) |
+| Server | Apache/2.4.58 (Ubuntu) on EC2 behind ALB |
 | AWS Region | ap-southeast-1 |
 | CMS | WordPress + Visual Composer + WooCommerce |
 | Forms | HubSpot (JS-loaded, POST to HubSpot servers) + Contact Form 7 |
-| Current TTFB | ~613ms (no caching at all) |
-| Current cache headers | None |
 
 ## File Structure
 
@@ -35,23 +49,42 @@ CloudFront cache behaviors route requests by path pattern:
 tp3-fast/
 ├── CLAUDE.md
 ├── infra/
-│   └── cloudfront.yaml       # CloudFormation template
+│   ├── cloudfront.yaml        # Test stack template (account 273617194870, tp3-fast.yma.cloud)
+│   ├── cloudfront-live.yaml   # Production template (account 513635640086, www.trinityp3.com)
+│   └── error/
+│       └── index.html         # Custom error page (uploaded to S3)
 ├── scripts/
-│   ├── invalidate.sh          # Cache invalidation CLI
-│   ├── lighthouse.sh           # Lighthouse baseline/test/compare
-│   └── warm-cache.sh           # Warm CloudFront cache via sitemap crawl
+│   ├── invalidate.sh          # Cache invalidation CLI with presets
+│   ├── lighthouse.sh          # Lighthouse baseline/test/compare
+│   └── warm-cache.sh          # Warm CloudFront cache via sitemap crawl
 ├── reports/                   # Lighthouse JSON/HTML reports
 └── package.json               # lighthouse dev dependency
 ```
 
 ## AWS
 
-- Uses the parent orchestrator's deployer profiles
-- CloudFront distribution will need an ACM certificate in us-east-1 (required for CF)
-- Origin uses HTTPS to www.trinityp3.com
+### Stacks
+
+| Stack | Account | Domain | Template | Status |
+|-------|---------|--------|----------|--------|
+| `tp3-fast` | 273617194870 (yma-web) | `tp3-fast.yma.cloud` | `cloudfront.yaml` | Test (to be decommissioned) |
+| `tp3-fast-live` | 513635640086 | `www.trinityp3.com` | `cloudfront-live.yaml` | Production |
+
+### Credentials
+
+Production stack uses `sa-tp3` profile from `~/.aws/credentials-admin` (Tier 3 — manual use only):
+```bash
+AWS_SHARED_CREDENTIALS_FILE=~/.aws/credentials-admin aws <command> --profile sa-tp3
+```
+
+Route53 hosted zone: `Z2J7S1514T8FGD` (trinityp3.com, account 513635640086)
 
 ## Key Decisions
 
-- CloudFront origin is the existing domain, not the EC2 IPs — preserves SSL and Host header
+- No Lambda@Edge needed — CloudFront serves the real domain, so no URL rewriting required
+- Origin is `origin.trinityp3.com` (CNAME to ALB) with HTTP-only protocol to avoid SSL cert mismatch
+- Host header forwarded from viewer to origin so WordPress sees `Host: www.trinityp3.com`
+- DNS managed outside CloudFormation for instant rollback capability
 - Cookie forwarding whitelisted (not forward-all) to prevent WP cookies busting cache
 - Query string forwarding enabled for pagination/search but excluded from cache key where possible
+- Custom error page served from S3 via OAI (not Lambda@Edge)

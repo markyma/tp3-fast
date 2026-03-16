@@ -1,42 +1,82 @@
 #!/usr/bin/env bash
-# Invalidate CloudFront cache paths for tp3-fast
+# Invalidate CloudFront cache paths for tp3-fast (production)
 #
 # Usage:
-#   ./invalidate.sh /blog/*          # invalidate all blog pages
-#   ./invalidate.sh /                # invalidate homepage
-#   ./invalidate.sh /*               # invalidate everything (use sparingly)
-#   ./invalidate.sh /page1 /page2    # invalidate multiple paths
+#   ./invalidate.sh <preset|path...>
+#
+# Presets:
+#   all        Invalidate everything (/*)
+#   home       Homepage only (/)
+#   css        All CSS files
+#   js         All JS files
+#   static     All static assets (wp-content + wp-includes)
+#   blog       All blog pages
+#   pages      All content pages (blog + insights + resources)
+#
+# Custom:
+#   ./invalidate.sh /some/path/* /another/path
+#
+# Rollback DNS (revert to direct ALB):
+#   Record the original www.trinityp3.com and trinityp3.com DNS records
+#   before cutover and UPSERT them back via Route53 if needed.
 
 set -euo pipefail
 
-STACK_NAME="tp3-fast"
-DIST_ID="${DIST_ID:-E2FKPXG4N8DU5C}"
-AWS_PROFILE="${AWS_PROFILE:-yma-cloud-deployer}"
+STACK_NAME="tp3-fast-live"
+AWS_PROFILE="${AWS_PROFILE:-sa-tp3}"
+export AWS_SHARED_CREDENTIALS_FILE="${AWS_SHARED_CREDENTIALS_FILE:-$HOME/.aws/credentials-admin}"
 REGION="${AWS_REGION:-us-east-1}"
 
+resolve_preset() {
+    case "$1" in
+        all)
+            echo "/*"
+            ;;
+        home)
+            echo "/"
+            ;;
+        css)
+            echo "/wp-content/*.css"
+            echo "/wp-includes/*.css"
+            ;;
+        js)
+            echo "/wp-content/*.js"
+            echo "/wp-includes/*.js"
+            ;;
+        static)
+            echo "/wp-content/*"
+            echo "/wp-includes/*"
+            ;;
+        blog)
+            echo "/blog/*"
+            ;;
+        pages)
+            echo "/blog/*"
+            echo "/insights/*"
+            echo "/resources/*"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 <path> [path2] [path3] ..."
+    echo "Usage: $0 <preset|path...>"
     echo ""
-    echo "Examples:"
-    echo "  $0 /                    # homepage"
-    echo "  $0 /blog/*              # all blog pages"
-    echo "  $0 /*                   # everything (costs \$0.005/path after first 1000/month)"
-    echo "  $0 /wp-content/*        # all static assets"
+    echo "Presets:"
+    echo "  all        Invalidate everything (/*)"
+    echo "  home       Homepage only (/)"
+    echo "  css        All CSS (/wp-content/*.css, /wp-includes/*.css)"
+    echo "  js         All JS (/wp-content/*.js, /wp-includes/*.js)"
+    echo "  static     All static assets (/wp-content/*, /wp-includes/*)"
+    echo "  blog       All blog pages (/blog/*)"
+    echo "  pages      All content pages (/blog/*, /insights/*, /resources/*)"
     echo ""
-    echo "Current invalidations in progress:"
-    DIST_ID=$(aws cloudfront list-distributions \
-        --profile "$AWS_PROFILE" \
-        --query "DistributionList.Items[?Comment=='TrinityP3 CDN Accelerator'].Id" \
-        --output text 2>/dev/null || echo "")
-    if [ -n "$DIST_ID" ]; then
-        aws cloudfront list-invalidations \
-            --profile "$AWS_PROFILE" \
-            --distribution-id "$DIST_ID" \
-            --query "InvalidationList.Items[?Status=='InProgress']" \
-            --output table 2>/dev/null || echo "  (none or unable to query)"
-    else
-        echo "  Distribution not found"
-    fi
+    echo "Custom:"
+    echo "  $0 /some/path/* /another/path"
+    echo ""
+    echo "Cost: First 1,000 invalidations/month free, then \$0.005/path"
     exit 1
 fi
 
@@ -54,19 +94,33 @@ if [ -z "$DIST_ID" ] || [ "$DIST_ID" = "None" ]; then
     exit 1
 fi
 
+# Resolve presets or use raw paths
+INVALIDATE_PATHS=()
+for arg in "$@"; do
+    if preset_paths=$(resolve_preset "$arg" 2>/dev/null); then
+        while IFS= read -r p; do
+            INVALIDATE_PATHS+=("$p")
+        done <<< "$preset_paths"
+    else
+        INVALIDATE_PATHS+=("$arg")
+    fi
+done
+
 # Build paths JSON
 PATHS=""
 COUNT=0
-for p in "$@"; do
+for p in "${INVALIDATE_PATHS[@]}"; do
     COUNT=$((COUNT + 1))
     if [ -n "$PATHS" ]; then PATHS="$PATHS,"; fi
     PATHS="$PATHS\"$p\""
 done
 
-CALLER_REF="tp3-fast-$(date +%s)"
+CALLER_REF="tp3-live-$(date +%s)"
 
 echo "Invalidating $COUNT path(s) on distribution $DIST_ID..."
-echo "Paths: $*"
+for p in "${INVALIDATE_PATHS[@]}"; do
+    echo "  $p"
+done
 echo ""
 
 aws cloudfront create-invalidation \

@@ -1,0 +1,349 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFront CDN accelerator for www.trinityp3.com (production)
+
+Parameters:
+  OriginDomain:
+    Type: String
+    Default: origin.trinityp3.com
+    Description: Origin domain (CNAME to ALB)
+
+  AcmCertificateArn:
+    Type: String
+    Description: ACM certificate ARN in us-east-1 covering www.trinityp3.com and trinityp3.com
+
+  HostedZoneId:
+    Type: String
+    Default: Z2J7S1514T8FGD
+    Description: Route53 hosted zone for trinityp3.com
+
+Resources:
+
+  # --- S3 error page ---
+
+  ErrorPageOAI:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: tp3-fast error page access
+
+  ErrorPageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: tp3-fast-error-pages
+
+  ErrorPageBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ErrorPageBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              CanonicalUser: !GetAtt ErrorPageOAI.S3CanonicalUserId
+            Action: s3:GetObject
+            Resource: !Sub '${ErrorPageBucket.Arn}/*'
+
+  # --- Cache policies ---
+
+  StaticAssetsCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: tp3-live-static-30d
+        DefaultTTL: 2592000
+        MaxTTL: 31536000
+        MinTTL: 86400
+        ParametersInCacheKeyAndForwardedToOrigin:
+          CookiesConfig:
+            CookieBehavior: none
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: none
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+
+  ContentCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: tp3-live-content-24hr
+        DefaultTTL: 86400
+        MaxTTL: 604800
+        MinTTL: 3600
+        ParametersInCacheKeyAndForwardedToOrigin:
+          CookiesConfig:
+            CookieBehavior: none
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: whitelist
+            QueryStrings:
+              - p
+              - page
+              - s
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+
+  DefaultCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: tp3-live-default-12hr
+        DefaultTTL: 43200
+        MaxTTL: 86400
+        MinTTL: 900
+        ParametersInCacheKeyAndForwardedToOrigin:
+          CookiesConfig:
+            CookieBehavior: none
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: whitelist
+            QueryStrings:
+              - p
+              - page
+              - s
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+
+  # --- Origin request policies (forward Host header to origin) ---
+
+  OriginRequestPolicy:
+    Type: AWS::CloudFront::OriginRequestPolicy
+    Properties:
+      OriginRequestPolicyConfig:
+        Name: tp3-live-origin-request
+        CookiesConfig:
+          CookieBehavior: none
+        HeadersConfig:
+          HeaderBehavior: whitelist
+          Headers:
+            - Host
+            - Accept
+            - Accept-Language
+        QueryStringsConfig:
+          QueryStringBehavior: all
+
+  BypassOriginRequestPolicy:
+    Type: AWS::CloudFront::OriginRequestPolicy
+    Properties:
+      OriginRequestPolicyConfig:
+        Name: tp3-live-bypass-request
+        CookiesConfig:
+          CookieBehavior: all
+        HeadersConfig:
+          HeaderBehavior: whitelist
+          Headers:
+            - Host
+            - Accept
+            - Accept-Language
+            - Referer
+        QueryStringsConfig:
+          QueryStringBehavior: all
+
+  # --- Security response headers ---
+
+  ResponseHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: tp3-live-response-headers
+        SecurityHeadersConfig:
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 31536000
+            IncludeSubdomains: true
+            Override: true
+            Preload: true
+          ContentTypeOptions:
+            Override: true
+          FrameOptions:
+            FrameOption: SAMEORIGIN
+            Override: true
+          ReferrerPolicy:
+            ReferrerPolicy: strict-origin-when-cross-origin
+            Override: true
+
+  # --- CloudFront Distribution ---
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: TrinityP3 CDN Accelerator (production)
+        HttpVersion: http2and3
+        PriceClass: PriceClass_All
+        DefaultRootObject: ''
+
+        CustomErrorResponses:
+          - ErrorCode: 502
+            ResponseCode: 503
+            ResponsePagePath: /error/index.html
+            ErrorCachingMinTTL: 300
+          - ErrorCode: 503
+            ResponseCode: 503
+            ResponsePagePath: /error/index.html
+            ErrorCachingMinTTL: 300
+          - ErrorCode: 504
+            ResponseCode: 503
+            ResponsePagePath: /error/index.html
+            ErrorCachingMinTTL: 300
+
+        Origins:
+          - DomainName: !Ref OriginDomain
+            Id: wordpress-origin
+            CustomOriginConfig:
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols:
+                - TLSv1.2
+              OriginReadTimeout: 30
+              OriginKeepaliveTimeout: 5
+
+          - DomainName: !GetAtt ErrorPageBucket.RegionalDomainName
+            Id: error-page-origin
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${ErrorPageOAI}'
+
+        Aliases:
+          - www.trinityp3.com
+          - trinityp3.com
+
+        ViewerCertificate:
+          AcmCertificateArn: !Ref AcmCertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+
+        CacheBehaviors:
+
+          # --- Error page from S3 ---
+
+          - PathPattern: /error/*
+            TargetOriginId: error-page-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: !Ref StaticAssetsCachePolicy
+            Compress: true
+
+          # --- Bypass behaviors (no cache, forward everything) ---
+
+          - PathPattern: /wp-admin/*
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: !Ref BypassOriginRequestPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            Compress: true
+
+          - PathPattern: /wp-login.php
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: !Ref BypassOriginRequestPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            Compress: true
+
+          - PathPattern: /wp-cron.php
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: !Ref BypassOriginRequestPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            Compress: true
+
+          - PathPattern: /my-account/*
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: !Ref BypassOriginRequestPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            Compress: true
+
+          - PathPattern: /cart/*
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: !Ref BypassOriginRequestPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            Compress: true
+
+          - PathPattern: /checkout/*
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: !Ref BypassOriginRequestPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            Compress: true
+
+          - PathPattern: /wp-json/*
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: !Ref BypassOriginRequestPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            Compress: true
+
+          # --- Static assets (30-day cache) ---
+
+          - PathPattern: /wp-content/*
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: !Ref StaticAssetsCachePolicy
+            OriginRequestPolicyId: !Ref OriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref ResponseHeadersPolicy
+            Compress: true
+
+          - PathPattern: /wp-includes/*
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: !Ref StaticAssetsCachePolicy
+            OriginRequestPolicyId: !Ref OriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref ResponseHeadersPolicy
+            Compress: true
+
+          # --- Content pages (24hr cache) ---
+
+          - PathPattern: /blog/*
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: !Ref ContentCachePolicy
+            OriginRequestPolicyId: !Ref OriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref ResponseHeadersPolicy
+            Compress: true
+
+          - PathPattern: /insights/*
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: !Ref ContentCachePolicy
+            OriginRequestPolicyId: !Ref OriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref ResponseHeadersPolicy
+            Compress: true
+
+          - PathPattern: /resources/*
+            TargetOriginId: wordpress-origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: !Ref ContentCachePolicy
+            OriginRequestPolicyId: !Ref OriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref ResponseHeadersPolicy
+            Compress: true
+
+        # --- Default behavior (12hr cache) ---
+
+        DefaultCacheBehavior:
+          TargetOriginId: wordpress-origin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: !Ref DefaultCachePolicy
+          OriginRequestPolicyId: !Ref OriginRequestPolicy
+          ResponseHeadersPolicyId: !Ref ResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+          Compress: true
+
+Outputs:
+  DistributionId:
+    Value: !Ref Distribution
+  DistributionDomain:
+    Value: !GetAtt Distribution.DomainName
+  SiteUrl:
+    Value: https://www.trinityp3.com
+  ErrorBucket:
+    Value: !Ref ErrorPageBucket
