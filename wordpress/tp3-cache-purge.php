@@ -169,7 +169,7 @@ class TP3_Cache_Purge {
 						<td>
 							<input type="url" id="tp3_api_url" name="tp3_api_url"
 								value="<?php echo esc_attr( $api_url ); ?>"
-								class="regular-text" placeholder="https://xxx.execute-api.us-east-1.amazonaws.com/prod/invalidate" />
+								class="regular-text" placeholder="https://tp3-fast.trinityp3.com/invalidate" />
 						</td>
 					</tr>
 					<tr>

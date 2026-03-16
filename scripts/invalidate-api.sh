@@ -17,7 +17,7 @@ set -euo pipefail
 if [ -z "${TP3_INVALIDATE_URL:-}" ] || [ -z "${TP3_INVALIDATE_KEY:-}" ]; then
     echo "ERROR: Set TP3_INVALIDATE_URL and TP3_INVALIDATE_KEY environment variables"
     echo ""
-    echo "  export TP3_INVALIDATE_URL='https://xxx.execute-api.us-east-1.amazonaws.com/prod/invalidate'"
+    echo "  export TP3_INVALIDATE_URL='https://tp3-fast.trinityp3.com/invalidate'"
     echo "  export TP3_INVALIDATE_KEY='your-api-key'"
     exit 1
 fi

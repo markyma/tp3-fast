@@ -31,6 +31,7 @@ CloudFront cache behaviors route requests by path pattern:
 | `trinityp3.com` | A (alias) | CloudFront distribution | Apex domain |
 | `origin.trinityp3.com` | CNAME | `dualstack.www-trinityp3-com-2026-1815045803.ap-southeast-1.elb.amazonaws.com` | CloudFront origin |
 | `admin.trinityp3.com` | A | `54.169.176.222` | Direct admin access |
+| `tp3-fast.trinityp3.com` | A (alias) | API Gateway custom domain | Cache invalidation API |
 
 ## Origin Details
 
@@ -86,9 +87,11 @@ Route53 hosted zone: `Z2J7S1514T8FGD` (trinityp3.com, account 513635640086)
 
 Serverless endpoint (API Gateway + Lambda) for triggering CloudFront invalidations without AWS credentials. Secured with API key.
 
+Custom domain: `https://tp3-fast.trinityp3.com/invalidate` (edge-optimized API Gateway with ACM cert).
+
 ```bash
 # Via curl
-curl -X POST "$TP3_INVALIDATE_URL" \
+curl -X POST "https://tp3-fast.trinityp3.com/invalidate" \
   -H "x-api-key: $TP3_INVALIDATE_KEY" \
   -d '{"preset":"home"}'
 
@@ -100,7 +103,7 @@ curl -X POST "$TP3_INVALIDATE_URL" \
 Presets: `all`, `home`, `css`, `js`, `static`, `blog`, `pages` (same as `invalidate.sh`).
 
 Environment variables:
-- `TP3_INVALIDATE_URL` — API endpoint (from stack output `InvalidationApiUrl`)
+- `TP3_INVALIDATE_URL` — `https://tp3-fast.trinityp3.com/invalidate`
 - `TP3_INVALIDATE_KEY` — API key (retrieve with `aws apigateway get-api-key --api-key <InvalidationApiKeyId> --include-value`)
 
 Throttle: 2 req/sec, burst 5, max 100/day.

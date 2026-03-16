@@ -16,6 +16,10 @@ Parameters:
     Default: Z2J7S1514T8FGD
     Description: Route53 hosted zone for trinityp3.com
 
+  ApiAcmCertificateArn:
+    Type: String
+    Description: ACM certificate ARN in us-east-1 for tp3-fast.trinityp3.com
+
 Resources:
 
   # --- S3 error page ---
@@ -521,6 +525,35 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${InvalidationApi}/prod/POST/invalidate'
+
+  # --- API Gateway custom domain ---
+
+  ApiCustomDomain:
+    Type: AWS::ApiGateway::DomainName
+    Properties:
+      DomainName: tp3-fast.trinityp3.com
+      CertificateArn: !Ref ApiAcmCertificateArn
+      EndpointConfiguration:
+        Types:
+          - EDGE
+
+  ApiBasePathMapping:
+    Type: AWS::ApiGateway::BasePathMapping
+    DependsOn: InvalidationApiStage
+    Properties:
+      DomainName: !Ref ApiCustomDomain
+      RestApiId: !Ref InvalidationApi
+      Stage: prod
+
+  ApiDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: tp3-fast.trinityp3.com
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt ApiCustomDomain.DistributionDomainName
+        HostedZoneId: !GetAtt ApiCustomDomain.DistributionHostedZoneId
 
 Outputs:
   DistributionId:
