@@ -338,6 +338,190 @@ Resources:
           AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
           Compress: true
 
+  # --- Cache Invalidation API ---
+
+  InvalidationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: tp3-fast-invalidation-lambda
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CloudFrontInvalidation
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: cloudfront:CreateInvalidation
+                Resource: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}'
+
+  InvalidationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: tp3-fast-invalidate
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 10
+      Role: !GetAtt InvalidationLambdaRole.Arn
+      Environment:
+        Variables:
+          DISTRIBUTION_ID: !Ref Distribution
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import time
+          import boto3
+
+          cf = boto3.client('cloudfront')
+          DIST_ID = os.environ['DISTRIBUTION_ID']
+
+          PRESETS = {
+              'all': ['/*'],
+              'home': ['/'],
+              'css': ['/wp-content/*.css', '/wp-includes/*.css'],
+              'js': ['/wp-content/*.js', '/wp-includes/*.js'],
+              'static': ['/wp-content/*', '/wp-includes/*'],
+              'blog': ['/blog/*'],
+              'pages': ['/blog/*', '/insights/*', '/resources/*'],
+          }
+
+          def handler(event, context):
+              try:
+                  body = json.loads(event.get('body') or '{}')
+              except (json.JSONDecodeError, TypeError):
+                  return response(400, {'error': 'Invalid JSON body'})
+
+              preset = body.get('preset')
+              paths = body.get('paths')
+
+              if preset:
+                  if preset not in PRESETS:
+                      return response(400, {
+                          'error': f'Unknown preset: {preset}',
+                          'valid_presets': list(PRESETS.keys()),
+                      })
+                  paths = PRESETS[preset]
+              elif not paths or not isinstance(paths, list):
+                  return response(400, {
+                      'error': 'Provide "preset" or "paths" array',
+                      'valid_presets': list(PRESETS.keys()),
+                  })
+
+              for p in paths:
+                  if not isinstance(p, str) or not p.startswith('/'):
+                      return response(400, {'error': f'Invalid path: {p} (must start with /)'})
+
+              caller_ref = f'api-{int(time.time())}'
+              result = cf.create_invalidation(
+                  DistributionId=DIST_ID,
+                  InvalidationBatch={
+                      'Paths': {'Quantity': len(paths), 'Items': paths},
+                      'CallerReference': caller_ref,
+                  },
+              )
+
+              inv = result['Invalidation']
+              return response(200, {
+                  'status': 'submitted',
+                  'id': inv['Id'],
+                  'paths': paths,
+              })
+
+          def response(code, body):
+              return {
+                  'statusCode': code,
+                  'headers': {'Content-Type': 'application/json'},
+                  'body': json.dumps(body),
+              }
+
+  InvalidationApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: tp3-fast-invalidation
+      Description: Cache invalidation API for tp3-fast CloudFront distribution
+      ApiKeySourceType: HEADER
+
+  InvalidationApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref InvalidationApi
+      ParentId: !GetAtt InvalidationApi.RootResourceId
+      PathPart: invalidate
+
+  InvalidationApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref InvalidationApi
+      ResourceId: !Ref InvalidationApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${InvalidationFunction.Arn}/invocations'
+
+  InvalidationApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: InvalidationApiMethod
+    Properties:
+      RestApiId: !Ref InvalidationApi
+
+  InvalidationApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref InvalidationApi
+      DeploymentId: !Ref InvalidationApiDeployment
+      StageName: prod
+
+  InvalidationApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    DependsOn: InvalidationApiStage
+    Properties:
+      Name: tp3-fast-invalidation-key
+      Enabled: true
+      StageKeys:
+        - RestApiId: !Ref InvalidationApi
+          StageName: prod
+
+  InvalidationUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    DependsOn: InvalidationApiStage
+    Properties:
+      UsagePlanName: tp3-fast-invalidation-plan
+      Throttle:
+        BurstLimit: 5
+        RateLimit: 2
+      Quota:
+        Limit: 100
+        Period: DAY
+      ApiStages:
+        - ApiId: !Ref InvalidationApi
+          Stage: prod
+
+  InvalidationUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref InvalidationApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref InvalidationUsagePlan
+
+  InvalidationLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref InvalidationFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${InvalidationApi}/prod/POST/invalidate'
+
 Outputs:
   DistributionId:
     Value: !Ref Distribution
@@ -347,3 +531,8 @@ Outputs:
     Value: https://www.trinityp3.com
   ErrorBucket:
     Value: !Ref ErrorPageBucket
+  InvalidationApiUrl:
+    Value: !Sub 'https://${InvalidationApi}.execute-api.${AWS::Region}.amazonaws.com/prod/invalidate'
+  InvalidationApiKeyId:
+    Value: !Ref InvalidationApiKey
+    Description: API key ID (use aws apigateway get-api-key --api-key <id> --include-value to get the key)

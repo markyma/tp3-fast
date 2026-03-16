@@ -54,7 +54,8 @@ tp3-fast/
 │   └── error/
 │       └── index.html         # Custom error page (uploaded to S3)
 ├── scripts/
-│   ├── invalidate.sh          # Cache invalidation CLI with presets
+│   ├── invalidate.sh          # Cache invalidation CLI with presets (requires AWS creds)
+│   ├── invalidate-api.sh      # Cache invalidation via API (no AWS creds needed)
 │   ├── lighthouse.sh          # Lighthouse baseline/test/compare
 │   └── warm-cache.sh          # Warm CloudFront cache via sitemap crawl
 ├── reports/                   # Lighthouse JSON/HTML reports
@@ -78,6 +79,29 @@ AWS_SHARED_CREDENTIALS_FILE=~/.aws/credentials-admin aws <command> --profile sa-
 ```
 
 Route53 hosted zone: `Z2J7S1514T8FGD` (trinityp3.com, account 513635640086)
+
+## Cache Invalidation API
+
+Serverless endpoint (API Gateway + Lambda) for triggering CloudFront invalidations without AWS credentials. Secured with API key.
+
+```bash
+# Via curl
+curl -X POST "$TP3_INVALIDATE_URL" \
+  -H "x-api-key: $TP3_INVALIDATE_KEY" \
+  -d '{"preset":"home"}'
+
+# Via wrapper script (from EC2 or anywhere)
+./scripts/invalidate-api.sh home
+./scripts/invalidate-api.sh /blog/*
+```
+
+Presets: `all`, `home`, `css`, `js`, `static`, `blog`, `pages` (same as `invalidate.sh`).
+
+Environment variables:
+- `TP3_INVALIDATE_URL` — API endpoint (from stack output `InvalidationApiUrl`)
+- `TP3_INVALIDATE_KEY` — API key (retrieve with `aws apigateway get-api-key --api-key <InvalidationApiKeyId> --include-value`)
+
+Throttle: 2 req/sec, burst 5, max 100/day.
 
 ## Key Decisions
 
