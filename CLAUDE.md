@@ -58,6 +58,8 @@ tp3-fast/
 │   ├── invalidate-api.sh      # Cache invalidation via API (no AWS creds needed)
 │   ├── lighthouse.sh          # Lighthouse baseline/test/compare
 │   └── warm-cache.sh          # Warm CloudFront cache via sitemap crawl
+├── wordpress/
+│   └── tp3-cache-purge.php    # WordPress plugin — purge CDN cache from wp-admin
 ├── reports/                   # Lighthouse JSON/HTML reports
 └── package.json               # lighthouse dev dependency
 ```
@@ -102,6 +104,21 @@ Environment variables:
 - `TP3_INVALIDATE_KEY` — API key (retrieve with `aws apigateway get-api-key --api-key <InvalidationApiKeyId> --include-value`)
 
 Throttle: 2 req/sec, burst 5, max 100/day.
+
+## WordPress Plugin
+
+`wordpress/tp3-cache-purge.php` — single-file plugin for purging CloudFront cache from wp-admin.
+
+Install: upload via Plugins > Add New > Upload, or SCP to `wp-content/plugins/`.
+
+Features:
+- Top-level "CDN Cache" menu in wp-admin sidebar
+- Settings page for API URL + API Key (key masked in UI, stored in `wp_options`)
+- Preset purge buttons: All, Home, CSS, JS, Static, Blog, Pages
+- Custom path input for arbitrary invalidations
+- Admin-only (`manage_options`), nonce-protected, uses `wp_remote_post()`
+
+No auto-invalidation — manual purge only.
 
 ## Key Decisions
 
