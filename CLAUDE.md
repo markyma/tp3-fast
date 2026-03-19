@@ -30,7 +30,7 @@ CloudFront cache behaviors route requests by path pattern:
 | `www.trinityp3.com` | A (alias) | CloudFront distribution | Production CDN |
 | `trinityp3.com` | A (alias) | CloudFront distribution | Apex domain |
 | `origin.trinityp3.com` | CNAME | `dualstack.www-trinityp3-com-2026-1815045803.ap-southeast-1.elb.amazonaws.com` | CloudFront origin |
-| `admin.trinityp3.com` | A | `54.169.176.222` | Direct admin access |
+| `admin.trinityp3.com` | A | `54.169.176.222` | Direct EC2 (broken — Apache redirects to www, no HTTPS) |
 | `tp3-fast.trinityp3.com` | A (alias) | API Gateway custom domain | Cache invalidation API |
 
 ## Origin Details

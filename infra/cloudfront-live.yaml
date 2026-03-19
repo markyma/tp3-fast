@@ -671,6 +671,10 @@ Resources:
           last_alert = {'time': 0}
 
           def handler(event, context):
+              if event.get('source') == 'aws.events' and event.get('resources', [''])[0].endswith('tp3-fast-weekly-report'):
+                  send_weekly_report()
+                  return {'ok': True, 'action': 'weekly_report'}
+
               headers = {
                   'User-Agent': 'Mozilla/5.0 (tp3-fast uptime monitor)',
                   'Accept': 'text/html,application/xhtml+xml',
@@ -696,24 +700,56 @@ Resources:
 
               last_alert['time'] = now
               detail = f'Status: {status}' if status else f'Error: {error_msg}'
+              timestamp = time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())
               subject = f'ALERT: www.trinityp3.com is DOWN ({detail})'
-              body = (
-                  f'www.trinityp3.com uptime check FAILED\n\n'
-                  f'URL: {URL}\n'
-                  f'{detail}\n'
-                  f'Time: {time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())}\n\n'
-                  f'Check: https://admin.trinityp3.com/ (bypasses CDN)\n'
-                  f'Invalidate cache: ./scripts/invalidate-api.sh all\n'
+              html = (
+                  f'<h2>www.trinityp3.com is DOWN</h2>'
+                  f'<p><strong>{detail}</strong></p>'
+                  f'<table cellpadding="4" style="border-collapse:collapse">'
+                  f'<tr><td style="color:#666">URL</td><td>{URL}</td></tr>'
+                  f'<tr><td style="color:#666">Time</td><td>{timestamp}</td></tr>'
+                  f'</table><hr>'
+                  f'<p><strong>Quick actions:</strong></p><ul>'
+                  f'<li><a href="https://origin.trinityp3.com/">Check origin directly</a> (bypasses CDN, via ALB)</li>'
+                  f'<li>Invalidate CDN cache: <code>./scripts/invalidate-api.sh all</code></li>'
+                  f'</ul>'
+                  f'<p style="color:#999;font-size:12px">Alerts throttled to max once per hour. '
+                  f'Sent by tp3-fast uptime monitor (Lambda/SES).</p>'
               )
               ses.send_email(
                   Source=SENDER,
                   Destination={'ToAddresses': RECIPIENTS},
                   Message={
                       'Subject': {'Data': subject},
-                      'Body': {'Text': {'Data': body}},
+                      'Body': {'Html': {'Data': html}},
                   },
               )
               return {'status': status, 'ok': False, 'alert': 'sent'}
+
+
+          def send_weekly_report():
+              timestamp = time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())
+              html = (
+                  '<h2 style="color:#2e7d32">All good — uptime monitor running normally</h2>'
+                  '<p>This is your weekly check-in to confirm that the '
+                  '<strong>www.trinityp3.com</strong> downtime monitor is active and working.</p>'
+                  '<table cellpadding="4" style="border-collapse:collapse">'
+                  f'<tr><td style="color:#666">Report time</td><td>{timestamp}</td></tr>'
+                  '<tr><td style="color:#666">Check frequency</td><td>Every minute</td></tr>'
+                  '<tr><td style="color:#666">Alert throttle</td><td>Max once per hour</td></tr>'
+                  '<tr><td style="color:#666">Monitored URL</td><td>https://www.trinityp3.com/</td></tr>'
+                  '</table>'
+                  '<p style="color:#999;font-size:12px">If you stop receiving this weekly email, '
+                  'the monitor itself may be down. Contact your administrator.</p>'
+              )
+              ses.send_email(
+                  Source=SENDER,
+                  Destination={'ToAddresses': RECIPIENTS},
+                  Message={
+                      'Subject': {'Data': 'Weekly report: www.trinityp3.com uptime monitor running normally'},
+                      'Body': {'Html': {'Data': html}},
+                  },
+              )
 
   UptimeCheckSchedule:
     Type: AWS::Events::Rule
@@ -732,6 +768,25 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: events.amazonaws.com
       SourceArn: !GetAtt UptimeCheckSchedule.Arn
+
+  WeeklyReportSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: tp3-fast-weekly-report
+      ScheduleExpression: cron(0 0 ? * MON *)
+      Description: Weekly uptime monitor health report (Monday 00:00 UTC / 11:00 AEDT)
+      State: ENABLED
+      Targets:
+        - Id: weekly-report
+          Arn: !GetAtt UptimeCheckFunction.Arn
+
+  WeeklyReportPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref UptimeCheckFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt WeeklyReportSchedule.Arn
 
 Outputs:
   DistributionId:
