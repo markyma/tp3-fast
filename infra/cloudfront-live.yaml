@@ -612,26 +612,9 @@ Resources:
         DNSName: !GetAtt ApiCustomDomain.DistributionDomainName
         HostedZoneId: !GetAtt ApiCustomDomain.DistributionHostedZoneId
 
-  # --- Uptime monitor (every minute, email alert max once/hour) ---
-
-  UptimeAlertTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      TopicName: tp3-fast-uptime-alerts
-
-  UptimeAlertSub1:
-    Type: AWS::SNS::Subscription
-    Properties:
-      TopicArn: !Ref UptimeAlertTopic
-      Protocol: email
-      Endpoint: support@trinityp3.com
-
-  UptimeAlertSub2:
-    Type: AWS::SNS::Subscription
-    Properties:
-      TopicArn: !Ref UptimeAlertTopic
-      Protocol: email
-      Endpoint: mark@yma.cloud
+  # --- Uptime monitor (every minute, email alert via SES max once/hour) ---
+  # SES domain identity for trinityp3.com must be verified (DKIM records in Route53).
+  # In SES sandbox mode, recipient emails must also be verified.
 
   UptimeCheckRole:
     Type: AWS::IAM::Role
@@ -647,13 +630,15 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
       Policies:
-        - PolicyName: SnsPublish
+        - PolicyName: SesSend
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
-                Action: sns:Publish
-                Resource: !Ref UptimeAlertTopic
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: '*'
 
   UptimeCheckFunction:
     Type: AWS::Lambda::Function
@@ -665,7 +650,8 @@ Resources:
       Role: !GetAtt UptimeCheckRole.Arn
       Environment:
         Variables:
-          SNS_TOPIC_ARN: !Ref UptimeAlertTopic
+          SENDER: alerts@trinityp3.com
+          RECIPIENTS: support@trinityp3.com,mark@yma.cloud
           CHECK_URL: https://www.trinityp3.com/
           ALERT_COOLDOWN_MINUTES: '60'
       Code:
@@ -676,8 +662,9 @@ Resources:
           import urllib.request
           import boto3
 
-          sns = boto3.client('sns')
-          TOPIC = os.environ['SNS_TOPIC_ARN']
+          ses = boto3.client('ses', region_name='us-east-1')
+          RECIPIENTS = os.environ['RECIPIENTS'].split(',')
+          SENDER = os.environ['SENDER']
           URL = os.environ['CHECK_URL']
           COOLDOWN = int(os.environ['ALERT_COOLDOWN_MINUTES']) * 60
 
@@ -690,6 +677,7 @@ Resources:
                   'Accept-Encoding': 'gzip, deflate, br',
               }
               req = urllib.request.Request(URL, headers=headers)
+              error_msg = ''
               try:
                   resp = urllib.request.urlopen(req, timeout=15)
                   status = resp.getcode()
@@ -708,17 +696,22 @@ Resources:
 
               last_alert['time'] = now
               detail = f'Status: {status}' if status else f'Error: {error_msg}'
-              sns.publish(
-                  TopicArn=TOPIC,
-                  Subject=f'ALERT: www.trinityp3.com is DOWN ({detail})',
-                  Message=(
-                      f'www.trinityp3.com uptime check FAILED\n\n'
-                      f'URL: {URL}\n'
-                      f'{detail}\n'
-                      f'Time: {time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())}\n\n'
-                      f'Check: https://admin.trinityp3.com/ (bypasses CDN)\n'
-                      f'Invalidate cache: ./scripts/invalidate-api.sh all\n'
-                  ),
+              subject = f'ALERT: www.trinityp3.com is DOWN ({detail})'
+              body = (
+                  f'www.trinityp3.com uptime check FAILED\n\n'
+                  f'URL: {URL}\n'
+                  f'{detail}\n'
+                  f'Time: {time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())}\n\n'
+                  f'Check: https://admin.trinityp3.com/ (bypasses CDN)\n'
+                  f'Invalidate cache: ./scripts/invalidate-api.sh all\n'
+              )
+              ses.send_email(
+                  Source=SENDER,
+                  Destination={'ToAddresses': RECIPIENTS},
+                  Message={
+                      'Subject': {'Data': subject},
+                      'Body': {'Text': {'Data': body}},
+                  },
               )
               return {'status': status, 'ok': False, 'alert': 'sent'}
 
