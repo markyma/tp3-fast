@@ -168,6 +168,45 @@ Resources:
             ReferrerPolicy: strict-origin-when-cross-origin
             Override: true
 
+  # --- Lambda@Edge: prevent caching redirects ---
+
+  RedirectNoCacheRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: tp3-fast-redirect-no-cache
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - edgelambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  RedirectNoCacheFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: tp3-fast-redirect-no-cache
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 5
+      Role: !GetAtt RedirectNoCacheRole.Arn
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              response = event['Records'][0]['cf']['response']
+              if response['status'] in ('301', '302'):
+                  response['headers']['cache-control'] = [{'key': 'Cache-Control', 'value': 'no-store'}]
+              return response
+
+  RedirectNoCacheFunctionVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref RedirectNoCacheFunction
+
   # --- CloudFront Distribution ---
 
   Distribution:
@@ -296,6 +335,9 @@ Resources:
             OriginRequestPolicyId: !Ref OriginRequestPolicy
             ResponseHeadersPolicyId: !Ref ResponseHeadersPolicy
             Compress: true
+            LambdaFunctionAssociations:
+              - EventType: origin-response
+                LambdaFunctionARN: !Ref RedirectNoCacheFunctionVersion
 
           - PathPattern: /wp-includes/*
             TargetOriginId: wordpress-origin
@@ -304,6 +346,9 @@ Resources:
             OriginRequestPolicyId: !Ref OriginRequestPolicy
             ResponseHeadersPolicyId: !Ref ResponseHeadersPolicy
             Compress: true
+            LambdaFunctionAssociations:
+              - EventType: origin-response
+                LambdaFunctionARN: !Ref RedirectNoCacheFunctionVersion
 
           # --- Content pages (24hr cache) ---
 
@@ -314,6 +359,9 @@ Resources:
             OriginRequestPolicyId: !Ref OriginRequestPolicy
             ResponseHeadersPolicyId: !Ref ResponseHeadersPolicy
             Compress: true
+            LambdaFunctionAssociations:
+              - EventType: origin-response
+                LambdaFunctionARN: !Ref RedirectNoCacheFunctionVersion
 
           - PathPattern: /insights/*
             TargetOriginId: wordpress-origin
@@ -322,6 +370,9 @@ Resources:
             OriginRequestPolicyId: !Ref OriginRequestPolicy
             ResponseHeadersPolicyId: !Ref ResponseHeadersPolicy
             Compress: true
+            LambdaFunctionAssociations:
+              - EventType: origin-response
+                LambdaFunctionARN: !Ref RedirectNoCacheFunctionVersion
 
           - PathPattern: /resources/*
             TargetOriginId: wordpress-origin
@@ -330,6 +381,9 @@ Resources:
             OriginRequestPolicyId: !Ref OriginRequestPolicy
             ResponseHeadersPolicyId: !Ref ResponseHeadersPolicy
             Compress: true
+            LambdaFunctionAssociations:
+              - EventType: origin-response
+                LambdaFunctionARN: !Ref RedirectNoCacheFunctionVersion
 
         # --- Default behavior (12hr cache) ---
 
@@ -341,6 +395,9 @@ Resources:
           ResponseHeadersPolicyId: !Ref ResponseHeadersPolicy
           AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
           Compress: true
+          LambdaFunctionAssociations:
+            - EventType: origin-response
+              LambdaFunctionARN: !Ref RedirectNoCacheFunctionVersion
 
   # --- Cache Invalidation API ---
 

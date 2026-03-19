@@ -125,8 +125,8 @@ No auto-invalidation — manual purge only.
 
 ## Key Decisions
 
-- No Lambda@Edge needed — CloudFront serves the real domain, so no URL rewriting required
-- Origin is `origin.trinityp3.com` (CNAME to ALB) with HTTP-only protocol to avoid SSL cert mismatch
+- Lambda@Edge origin-response (`tp3-fast-redirect-no-cache`) prevents 301/302 responses from being cached — sets `Cache-Control: no-store` on redirects so transient origin issues don't get amplified into hours of cached redirect loops
+- Origin is `origin.trinityp3.com` (CNAME to ALB) with HTTPS-only protocol (ALB has valid cert)
 - Host header forwarded from viewer to origin so WordPress sees `Host: www.trinityp3.com`
 - DNS managed outside CloudFormation for instant rollback capability
 - Cookie forwarding whitelisted (not forward-all) to prevent WP cookies busting cache
