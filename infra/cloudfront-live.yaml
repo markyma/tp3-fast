@@ -612,6 +612,134 @@ Resources:
         DNSName: !GetAtt ApiCustomDomain.DistributionDomainName
         HostedZoneId: !GetAtt ApiCustomDomain.DistributionHostedZoneId
 
+  # --- Uptime monitor (every minute, email alert max once/hour) ---
+
+  UptimeAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: tp3-fast-uptime-alerts
+
+  UptimeAlertSub1:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref UptimeAlertTopic
+      Protocol: email
+      Endpoint: support@trinityp3.com
+
+  UptimeAlertSub2:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref UptimeAlertTopic
+      Protocol: email
+      Endpoint: mark@yma.cloud
+
+  UptimeCheckRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: tp3-fast-uptime-check
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SnsPublish
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref UptimeAlertTopic
+
+  UptimeCheckFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: tp3-fast-uptime-check
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt UptimeCheckRole.Arn
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref UptimeAlertTopic
+          CHECK_URL: https://www.trinityp3.com/
+          ALERT_COOLDOWN_MINUTES: '60'
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import time
+          import urllib.request
+          import boto3
+
+          sns = boto3.client('sns')
+          TOPIC = os.environ['SNS_TOPIC_ARN']
+          URL = os.environ['CHECK_URL']
+          COOLDOWN = int(os.environ['ALERT_COOLDOWN_MINUTES']) * 60
+
+          last_alert = {'time': 0}
+
+          def handler(event, context):
+              headers = {
+                  'User-Agent': 'Mozilla/5.0 (tp3-fast uptime monitor)',
+                  'Accept': 'text/html,application/xhtml+xml',
+                  'Accept-Encoding': 'gzip, deflate, br',
+              }
+              req = urllib.request.Request(URL, headers=headers)
+              try:
+                  resp = urllib.request.urlopen(req, timeout=15)
+                  status = resp.getcode()
+              except urllib.error.HTTPError as e:
+                  status = e.code
+              except Exception as e:
+                  status = 0
+                  error_msg = str(e)
+
+              if status == 200:
+                  return {'status': 200, 'ok': True}
+
+              now = time.time()
+              if now - last_alert['time'] < COOLDOWN:
+                  return {'status': status, 'ok': False, 'alert': 'suppressed'}
+
+              last_alert['time'] = now
+              detail = f'Status: {status}' if status else f'Error: {error_msg}'
+              sns.publish(
+                  TopicArn=TOPIC,
+                  Subject=f'ALERT: www.trinityp3.com is DOWN ({detail})',
+                  Message=(
+                      f'www.trinityp3.com uptime check FAILED\n\n'
+                      f'URL: {URL}\n'
+                      f'{detail}\n'
+                      f'Time: {time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())}\n\n'
+                      f'Check: https://admin.trinityp3.com/ (bypasses CDN)\n'
+                      f'Invalidate cache: ./scripts/invalidate-api.sh all\n'
+                  ),
+              )
+              return {'status': status, 'ok': False, 'alert': 'sent'}
+
+  UptimeCheckSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: tp3-fast-uptime-check
+      ScheduleExpression: rate(1 minute)
+      State: ENABLED
+      Targets:
+        - Id: uptime-check
+          Arn: !GetAtt UptimeCheckFunction.Arn
+
+  UptimeCheckPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref UptimeCheckFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt UptimeCheckSchedule.Arn
+
 Outputs:
   DistributionId:
     Value: !Ref Distribution
