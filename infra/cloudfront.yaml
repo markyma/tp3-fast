@@ -42,7 +42,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: tp3-fast-rewrite
-      Runtime: nodejs20.x
+      Runtime: nodejs22.x
       Handler: index.handler
       Role: !GetAtt LambdaEdgeRole.Arn
       Timeout: 10
